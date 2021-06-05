@@ -1,28 +1,27 @@
 package controllers
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"io/ioutil"
+	"math"
+	"net/http"
 
 	"encoding/json"
 	"log"
 	"os"
 	"time"
 
-	"../models"
+	"Rest_api/models"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-type MqttController struct {
-	session *mongo.Session
-}
-
-func NewMqttController(s *mongo.Session) *MqttController {
-	return &MqttController{s}
-}
-
-func (mc MqttController) GetSensorVal() {
+func GetSensorVal(mongoclient *mongo.Client) {
 
 	var flag bool = false
 	alertmssg := models.AlertMssg{}
@@ -52,15 +51,32 @@ func (mc MqttController) GetSensorVal() {
 
 	//define a function for the default message handler
 	var callback MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
-		fmt.Printf("TOPIC: %s\n", msg.Topic())
-		fmt.Printf("MSG: %s\n", msg.Payload())
+		fmt.Printf("Listening to Topic: %s\n", msg.Topic())
+		fmt.Printf("Recieved Payload Message : %s\n", msg.Payload())
+		fmt.Println("Analyzing data...")
 		err := json.Unmarshal([]byte(msg.Payload()), &alertmssg)
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("\nAfter converting to object : %#v\n", alertmssg)
+		fmt.Println("Analyzing Severity ...")
+		fmt.Println("Determined as ")
+		//determine the severe of injury
+		severity(&alertmssg)
+
+		//determine nearby hospital
+		nearBy(&alertmssg, mongoclient)
+
+		//adding the values to the database
+		insertDB(&alertmssg, mongoclient)
+
+		fmt.Println("Forwarding Alert Report to Nearby Hospital.....")
+		fmt.Println("Acknowledgement from Hospital")
+		//send file report to hospital
+		sendReport(alertmssg)
+		return
 
 	}
+
 	//subscribe
 	if token := c.Subscribe("mqtt", 0, callback); token.Wait() && token.Error() != nil {
 		fmt.Println(token.Error())
@@ -77,4 +93,125 @@ func (mc MqttController) GetSensorVal() {
 	}
 
 	c.Disconnect(250)
+}
+
+func insertDB(alertmssg *models.AlertMssg, mongoclient *mongo.Client) {
+	alertmssg.Id = primitive.NewObjectID() //create an object id
+	collection := mongoclient.Database("fir").Collection("cases")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// store the case in mongodb
+	_, insertErr := collection.InsertOne(ctx, alertmssg)
+	if insertErr != nil {
+		fmt.Println("Insertone Mongo ERROR", insertErr)
+		os.Exit(1)
+	}
+	fmt.Println("Case Result added to database")
+
+}
+
+func severity(alertmessage *models.AlertMssg) {
+	sensorReadings := alertmessage.Sensors
+	accelerometerData := sensorReadings.Accelerometer
+	soundData := sensorReadings.Sound
+	s := accG(accelerometerData, soundData)
+	alertmessage.Status = s
+	fmt.Println(s)
+}
+
+func nearBy(alertmssg *models.AlertMssg, mongoclient *mongo.Client) {
+	// Location is a GeoJSON type.
+	nearbyHos := []models.Point{}
+	c := alertmssg.Loc
+	latitude := c[1]
+	longitude := c[0]
+	collection := mongoclient.Database("hospitals").Collection("place")
+
+	location := NewPoint(longitude, latitude)
+	filter := bson.D{
+		{"location",
+			bson.D{
+				{"$near", bson.D{
+					{"$geometry", location},
+					{"$maxDistance", 10000},
+				}},
+			}},
+		{"status", "available"},
+	}
+	cur, err := collection.Find(context.TODO(), filter)
+	if err != nil {
+
+		fmt.Println("Error occured at nearby")
+
+	}
+	for cur.Next(context.TODO()) {
+		var p models.Point
+		err := cur.Decode(&p)
+		if err != nil {
+			fmt.Println("Could not decode Point")
+
+		}
+		nearbyHos = append(nearbyHos, p)
+	}
+	if err := cur.Err(); err != nil {
+		log.Fatal(err)
+	}
+	cur.Close(context.TODO())
+
+	if len(nearbyHos) == 0 {
+		return
+	}
+
+	fmt.Println("NEARBY HOSPITAL DETECTED! ")
+
+	fmt.Printf("Available hospital : %v\n", nearbyHos[0])
+	v := nearbyHos[0]
+
+	alertmssg.Hospital = v
+
+}
+
+func accG(accelerometerData []float64, sound int) string {
+	xval := accelerometerData[0]
+	yval := accelerometerData[1]
+	zval := accelerometerData[2]
+
+	accg := math.Sqrt(xval*xval + yval*yval + zval*zval) // calculate the magnitude of impact
+
+	if accg > 40.0 || sound >= 180 {
+		return "Severe Accident"
+
+	} else if accg > 20.0 {
+		return "Medium Accident"
+
+	} else if accg > 4.0 {
+		return "Mild Accident"
+	}
+	return "No Accident"
+}
+
+// NewPoint returns a GeoJSON Point with longitude and latitude.
+func NewPoint(long, lat float64) models.Location {
+	return models.Location{
+		Type:        "Point",
+		Coordinates: []float64{long, lat},
+	}
+}
+func sendReport(alertmssg models.AlertMssg) {
+	url := alertmssg.Hospital.Endpoint
+	b := new(bytes.Buffer)
+	err := json.NewEncoder(b).Encode(alertmssg)
+	if err != nil {
+		return
+	}
+	resp, err := http.Post(url, "application/json", b)
+	if err != nil {
+		fmt.Println("Failed to connect the hospital....")
+		return
+	}
+	data, _ := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	//print response body
+	fmt.Printf("%s\n", data)
+
 }

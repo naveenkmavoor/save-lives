@@ -2,34 +2,37 @@ package main
 
 import (
 	"context"
-	t "log"
+
+	"net/http"
+
 	"time"
 
-	"./controllers"
+	"Rest_api/controllers"
+
+	"github.com/gorilla/mux"
 
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func main() {
-	mc := controllers.NewMqttController(getSession())
-	go mc.GetSensorVal()
-}
-func getSession() *mongo.Session {
+var client *mongo.Client
 
+func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	var err error
+	client, err = mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	defer func() {
 		if err = client.Disconnect(ctx); err != nil {
 			panic(err)
 		}
 	}()
+	router := mux.NewRouter()
+	uc := controllers.NewUserController(client)
+	router.HandleFunc("/case/{id}", uc.GetCase).Methods("GET","OPTIONS") 
+	go router.HandleFunc("/case", uc.GetAllCases).Methods("GET", "OPTIONS")
 
-	session, err := client.StartSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &session
+	go controllers.GetSensorVal(client)
+
+	http.ListenAndServe("localhost:8083", router)
 }
