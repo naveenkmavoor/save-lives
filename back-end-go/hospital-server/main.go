@@ -19,8 +19,10 @@ func emergency(w http.ResponseWriter, req *http.Request) {
 	//print response  body
 	fmt.Printf("%s\n", data)
 	DispatchAmbulence()
+	fmt.Fprint(w, "Ambulence Dispatched")
 }
 
 func DispatchAmbulence() {
 	fmt.Println("Ambulence Dispatched")
+
 }

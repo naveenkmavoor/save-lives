@@ -29,7 +29,7 @@ func GetSensorVal(mongoclient *mongo.Client) {
 	//create a ClientOptions struct setting the broker address, clientid, turn
 	//off trace output and set the default message handler
 	opts := MQTT.NewClientOptions().AddBroker("mqtt://tailor.cloudmqtt.com:12189")
-	opts.SetUsername("username")
+	opts.SetUsername("user name")
 	opts.SetPassword("password")
 	opts.SetClientID("rasp-pi-go")
 	opts.SetDefaultPublishHandler(func(client MQTT.Client, msg MQTT.Message) {
@@ -64,15 +64,15 @@ func GetSensorVal(mongoclient *mongo.Client) {
 		severity(&alertmssg)
 
 		//determine nearby hospital
-		nearBy(&alertmssg, mongoclient)
+		nearbyHospitals := nearBy(&alertmssg, mongoclient)
+
+		fmt.Println("Forwarding Alert Report to Nearby Hospital.....")
+
+		//send file report to hospital
+		sendReport(&alertmssg, nearbyHospitals)
 
 		//adding the values to the database
 		insertDB(&alertmssg, mongoclient)
-
-		fmt.Println("Forwarding Alert Report to Nearby Hospital.....")
-		fmt.Println("Acknowledgement from Hospital")
-		//send file report to hospital
-		sendReport(alertmssg)
 		return
 
 	}
@@ -119,9 +119,9 @@ func severity(alertmessage *models.AlertMssg) {
 	fmt.Println(s)
 }
 
-func nearBy(alertmssg *models.AlertMssg, mongoclient *mongo.Client) {
+func nearBy(alertmssg *models.AlertMssg, mongoclient *mongo.Client) []models.Point {
 	// Location is a GeoJSON type.
-	nearbyHos := []models.Point{}
+	nearbyHospitals := []models.Point{}
 	c := alertmssg.Loc
 	latitude := c[1]
 	longitude := c[0]
@@ -151,23 +151,13 @@ func nearBy(alertmssg *models.AlertMssg, mongoclient *mongo.Client) {
 			fmt.Println("Could not decode Point")
 
 		}
-		nearbyHos = append(nearbyHos, p)
+		nearbyHospitals = append(nearbyHospitals, p)
 	}
 	if err := cur.Err(); err != nil {
 		log.Fatal(err)
 	}
 	cur.Close(context.TODO())
-
-	if len(nearbyHos) == 0 {
-		return
-	}
-
-	fmt.Println("NEARBY HOSPITAL DETECTED! ")
-
-	fmt.Printf("Available hospital : %v\n", nearbyHos[0])
-	v := nearbyHos[0]
-
-	alertmssg.Hospital = v
+	return nearbyHospitals
 
 }
 
@@ -197,21 +187,37 @@ func NewPoint(long, lat float64) models.Location {
 		Coordinates: []float64{long, lat},
 	}
 }
-func sendReport(alertmssg models.AlertMssg) {
-	url := alertmssg.Hospital.Endpoint
-	b := new(bytes.Buffer)
-	err := json.NewEncoder(b).Encode(alertmssg)
-	if err != nil {
+func sendReport(alertmssg *models.AlertMssg, nearbyHospitals []models.Point) {
+
+	if len(nearbyHospitals) == 0 {
 		return
 	}
-	resp, err := http.Post(url, "application/json", b)
-	if err != nil {
-		fmt.Println("Failed to connect the hospital....")
-		return
+
+	fmt.Println("NEARBY HOSPITALS DETECTED! ")
+
+	//finding all possiblity to successfully connect a nearby hospital
+	for _, val := range nearbyHospitals {
+		b := new(bytes.Buffer)
+		err := json.NewEncoder(b).Encode(val)
+		if err != nil {
+			return
+		}
+		response, err := http.Post(val.Endpoint, "application/json", b)
+		if err != nil {
+			fmt.Println("Failed to connect the hospital....")
+			//on failing would lead to search next nearby hospital
+			continue
+		}
+
+		fmt.Printf("Available hospital : %v\n", val)
+		alertmssg.Hospital = val
+		data, _ := ioutil.ReadAll(response.Body)
+		response.Body.Close()
+		//print response body
+		fmt.Printf("%s\n", data)
+		fmt.Println("Acknowledgement from Hospital")
+		//on successful alert exit from the loop
+		return 
 	}
-	data, _ := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	//print response body
-	fmt.Printf("%s\n", data)
 
 }
