@@ -29,8 +29,8 @@ func GetSensorVal(mongoclient *mongo.Client) {
 	//create a ClientOptions struct setting the broker address, clientid, turn
 	//off trace output and set the default message handler
 	opts := MQTT.NewClientOptions().AddBroker("mqtt://tailor.cloudmqtt.com:12189")
-	opts.SetUsername("frfnnxss")
-	opts.SetPassword("RL27X-zpeWvS")
+	opts.SetUsername("username")
+	opts.SetPassword("password")
 	opts.SetClientID("rasp-pi-go")
 	opts.SetDefaultPublishHandler(func(client MQTT.Client, msg MQTT.Message) {
 		fmt.Println("SetDefaultPublishHandler : ", msg.Topic(), string(msg.Payload()))
