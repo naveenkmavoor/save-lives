@@ -25,7 +25,7 @@ func main() {
 	defer func() {
 		if err = client.Disconnect(ctx); err != nil {
 			panic(err)
-		}
+		} 
 	}()
 	router := mux.NewRouter()
 	uc := controllers.NewUserController(client)
